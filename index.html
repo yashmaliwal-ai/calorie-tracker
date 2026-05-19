@@ -96,24 +96,30 @@ function getLast7Days() {
   return days;
 }
 
+async function callClaude(apiKey, body) {
+  const res = await fetch("/.netlify/functions/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, apiKey }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data;
+}
+
 async function analyzeImage(apiKey, base64, description, manualKcal, category) {
   let prompt = `You are a nutrition expert. Analyze this food image and estimate calories and macronutrients.`;
   if (description) prompt += ` Additional context: "${description}".`;
   if (category) prompt += ` This is a ${category} meal.`;
   if (manualKcal) prompt += ` The user specified ${manualKcal} kcal total.`;
   prompt += `\n\nRespond ONLY with valid JSON, no markdown, no backticks:\n{"name":"short food name max 4 words","kcal":<int>,"protein_g":<int>,"carbs_g":<int>,"fat_g":<int>,"confidence":"low|medium|high","breakdown":"1 sentence"}`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 400,
-      messages: [{ role: "user", content: [
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-        { type: "text", text: prompt }
-      ]}]
-    })
+  const data = await callClaude(apiKey, {
+    model: "claude-sonnet-4-20250514", max_tokens: 400,
+    messages: [{ role: "user", content: [
+      { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+      { type: "text", text: prompt }
+    ]}]
   });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
   const text = data.content?.map(b => b.text || "").join("") || "";
   return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
@@ -133,13 +139,7 @@ async function generateWeeklyReport(apiKey, log, goal, last7) {
   }).filter(d => d.logged);
   if (dayData.length === 0) return null;
   const prompt = `You are a nutrition coach reviewing a week of food logs. Daily calorie goal: ${goal} kcal.\n\nData:\n${JSON.stringify(dayData,null,2)}\n\nReturn ONLY JSON, no markdown:\n{"summary":"2-3 sentence encouraging summary","healthiest_day":{"date":"YYYY-MM-DD","reason":"1-2 sentences"},"unhealthiest_day":{"date":"YYYY-MM-DD","reason":"1-2 sentences, non-judgmental"},"eat_cleaner_tips":[{"tip":"specific actionable tip","context":"reference a logged meal"},{"tip":"...","context":"..."},{"tip":"...","context":"..."}],"strengths":["strength 1","strength 2"],"pattern":"1 sentence eating pattern observation"}`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
+  const data = await callClaude(apiKey, { model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] });
   const text = data.content?.map(b=>b.text||"").join("") || "";
   return JSON.parse(text.replace(/```json|```/g,"").trim());
 }
@@ -294,7 +294,23 @@ function App() {
   const handleFile = file => {
     if (!file) return;
     const r = new FileReader();
-    r.onload = e => setImgData(e.target.result.split(",")[1]);
+    r.onload = e => {
+      const img = new Image();
+      img.onload = () => {
+        const MAX = 1024;
+        let { width, height } = img;
+        if (width > MAX || height > MAX) {
+          if (width > height) { height = Math.round(height * MAX / width); width = MAX; }
+          else { width = Math.round(width * MAX / height); height = MAX; }
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width; canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL("image/jpeg", 0.82).split(",")[1];
+        setImgData(compressed);
+      };
+      img.src = e.target.result;
+    };
     r.readAsDataURL(file);
   };
 
