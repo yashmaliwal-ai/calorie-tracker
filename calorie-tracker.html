@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="default"/>
+<meta name="apple-mobile-web-app-title" content="Calorie Tracker"/>
+<title>Calorie Tracker</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #ffffff; --bg2: #f5f5f4; --bg3: #eeede8;
+    --text: #1a1a18; --text2: #6b6b67; --text3: #9d9c97;
+    --border: rgba(0,0,0,0.12); --border2: rgba(0,0,0,0.22);
+    --green: #1D9E75; --green-bg: #E1F5EE; --green-text: #0F6E56;
+    --amber: #EF9F27; --amber-bg: #FAEEDA; --amber-text: #854F0B;
+    --red: #E24B4A; --red-bg: #FAECE7; --red-text: #993C1D;
+    --blue: #378ADD; --blue-bg: #E6F1FB; --blue-text: #185FA5;
+    --pink: #D4537E; --pink-bg: #FBEAF0; --pink-text: #993556;
+    --radius: 12px; --radius-sm: 8px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e; --bg2: #2c2c2e; --bg3: #3a3a3c;
+      --text: #f2f2f7; --text2: #aeaeb2; --text3: #636366;
+      --border: rgba(255,255,255,0.1); --border2: rgba(255,255,255,0.2);
+      --green-bg: #0a3326; --green-text: #5dcaa5;
+      --amber-bg: #3d2a00; --amber-text: #f5c06a;
+      --red-bg: #3d1010; --red-text: #f09595;
+      --blue-bg: #0a2240; --blue-text: #85b7eb;
+      --pink-bg: #3d0f22; --pink-text: #ed93b1;
+    }
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { height: 100%; }
+  button {
+    font-family: inherit; font-size: 14px; cursor: pointer;
+    background: var(--bg); color: var(--text); border: 0.5px solid var(--border2);
+    border-radius: var(--radius-sm); padding: 7px 14px; transition: opacity 0.15s;
+  }
+  button:active { opacity: 0.7; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  input, textarea {
+    font-family: inherit; font-size: 14px; background: var(--bg2);
+    color: var(--text); border: 0.5px solid var(--border); border-radius: var(--radius-sm);
+    padding: 9px 12px; width: 100%; outline: none;
+  }
+  input:focus { border-color: var(--border2); }
+  p { line-height: 1.5; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+const STORAGE_KEY = "calorie_tracker_v2";
+const GOAL_KEY = "calorie_tracker_goal_v2";
+const API_KEY_STORAGE = "calorie_tracker_apikey";
+
+const CATEGORIES = [
+  { id: "breakfast", label: "Breakfast", icon: "ti-sunrise" },
+  { id: "lunch",     label: "Lunch",     icon: "ti-sun"     },
+  { id: "dinner",    label: "Dinner",    icon: "ti-moon"    },
+  { id: "snack",     label: "Snack",     icon: "ti-cookie"  },
+];
+const CAT_COLORS = {
+  breakfast: { bg: "var(--amber-bg)", text: "var(--amber-text)" },
+  lunch:     { bg: "var(--green-bg)", text: "var(--green-text)" },
+  dinner:    { bg: "var(--blue-bg)",  text: "var(--blue-text)"  },
+  snack:     { bg: "var(--pink-bg)",  text: "var(--pink-text)"  },
+};
+
+function formatDate(d) { return d.toISOString().split("T")[0]; }
+function todayKey() { return formatDate(new Date()); }
+function friendlyDate(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const today = new Date(); const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (dateStr === formatDate(today)) return "Today";
+  if (dateStr === formatDate(yesterday)) return "Yesterday";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+function getLast7Days() {
+  const days = [];
+  for (let i = 6; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push(formatDate(d)); }
+  return days;
+}
+
+async function analyzeImage(apiKey, base64, description, manualKcal, category) {
+  let prompt = `You are a nutrition expert. Analyze this food image and estimate calories and macronutrients.`;
+  if (description) prompt += ` Additional context: "${description}".`;
+  if (category) prompt += ` This is a ${category} meal.`;
+  if (manualKcal) prompt += ` The user specified ${manualKcal} kcal total.`;
+  prompt += `\n\nRespond ONLY with valid JSON, no markdown, no backticks:\n{"name":"short food name max 4 words","kcal":<int>,"protein_g":<int>,"carbs_g":<int>,"fat_g":<int>,"confidence":"low|medium|high","breakdown":"1 sentence"}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 400,
+      messages: [{ role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+        { type: "text", text: prompt }
+      ]}]
+    })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  const text = data.content?.map(b => b.text || "").join("") || "";
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+async function generateWeeklyReport(apiKey, log, goal, last7) {
+  const dayData = last7.map(day => {
+    const entries = log[day] || [];
+    return {
+      date: day,
+      kcal: entries.reduce((s,e)=>s+e.kcal,0),
+      protein_g: entries.reduce((s,e)=>s+(e.protein_g||0),0),
+      carbs_g: entries.reduce((s,e)=>s+(e.carbs_g||0),0),
+      fat_g: entries.reduce((s,e)=>s+(e.fat_g||0),0),
+      meals: entries.map(e=>({name:e.name,kcal:e.kcal,category:e.category,protein_g:e.protein_g,carbs_g:e.carbs_g,fat_g:e.fat_g})),
+      logged: entries.length > 0
+    };
+  }).filter(d => d.logged);
+  if (dayData.length === 0) return null;
+  const prompt = `You are a nutrition coach reviewing a week of food logs. Daily calorie goal: ${goal} kcal.\n\nData:\n${JSON.stringify(dayData,null,2)}\n\nReturn ONLY JSON, no markdown:\n{"summary":"2-3 sentence encouraging summary","healthiest_day":{"date":"YYYY-MM-DD","reason":"1-2 sentences"},"unhealthiest_day":{"date":"YYYY-MM-DD","reason":"1-2 sentences, non-judgmental"},"eat_cleaner_tips":[{"tip":"specific actionable tip","context":"reference a logged meal"},{"tip":"...","context":"..."},{"tip":"...","context":"..."}],"strengths":["strength 1","strength 2"],"pattern":"1 sentence eating pattern observation"}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  const text = data.content?.map(b=>b.text||"").join("") || "";
+  return JSON.parse(text.replace(/```json|```/g,"").trim());
+}
+
+// ─── MACRO BAR ───────────────────────────────────────────────────────────────
+function MacroBar({ protein, carbs, fat }) {
+  const total = (protein||0)+(carbs||0)+(fat||0);
+  if (!total) return null;
+  return (
+    <div style={{ display:"flex", height:7, borderRadius:99, overflow:"hidden", gap:1 }}>
+      <div style={{ width:`${Math.round((protein||0)/total*100)}%`, background:"var(--blue)" }} />
+      <div style={{ width:`${Math.round((carbs||0)/total*100)}%`, background:"var(--amber)" }} />
+      <div style={{ width:`${Math.round((fat||0)/total*100)}%`, background:"var(--pink)" }} />
+    </div>
+  );
+}
+function MacroChip({ label, val, textColor, bgColor }) {
+  return (
+    <div style={{ background:bgColor, borderRadius:var_sm, padding:"6px 8px", textAlign:"center" }}>
+      <p style={{ fontSize:10, color:textColor, opacity:0.85, marginBottom:2 }}>{label}</p>
+      <p style={{ fontSize:15, fontWeight:500, color:textColor }}>{val}g</p>
+    </div>
+  );
+}
+const var_sm = "var(--radius-sm)";
+
+// ─── ENTRY ROW ────────────────────────────────────────────────────────────────
+function EntryRow({ entry, onDelete, compact }) {
+  const [expanded, setExpanded] = useState(false);
+  const cat = CATEGORIES.find(c => c.id === entry.category);
+  return (
+    <div style={{ background:"var(--bg)", border:"0.5px solid var(--border)", borderRadius:"var(--radius)", overflow:"hidden" }}>
+      <div style={{ display:"flex", alignItems:"center", gap:8, padding: compact ? "0.5rem 0.75rem" : "0.7rem 0.9rem" }}>
+        {entry.img && <img src={`data:image/jpeg;base64,${entry.img}`} alt={entry.name} style={{ width:38, height:38, borderRadius:8, objectFit:"cover", flexShrink:0 }} />}
+        <div style={{ flex:1, minWidth:0 }}>
+          <p style={{ fontSize:14, fontWeight:500, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{entry.name}</p>
+          <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:2 }}>
+            <span style={{ fontSize:11, color:"var(--text2)" }}>{entry.time}</span>
+            {cat && <span style={{ fontSize:10, padding:"1px 6px", borderRadius:99, background:CAT_COLORS[cat.id].bg, color:CAT_COLORS[cat.id].text }}>{cat.label}</span>}
+          </div>
+        </div>
+        <span style={{ fontWeight:500, fontSize:14, color:"var(--green)", flexShrink:0 }}>{entry.kcal}</span>
+        <button onClick={() => setExpanded(!expanded)} style={{ background:"none", border:"none", padding:2, color:"var(--text3)" }}>
+          <i className={`ti ${expanded?"ti-chevron-up":"ti-chevron-down"}`} style={{ fontSize:15 }} />
+        </button>
+      </div>
+      {expanded && (
+        <div style={{ padding:"0 0.9rem 0.75rem", borderTop:"0.5px solid var(--border)", animation:"fadeIn 0.15s ease" }}>
+          {(entry.protein_g||entry.carbs_g||entry.fat_g) ? (
+            <>
+              <div style={{ marginTop:8 }}><MacroBar protein={entry.protein_g} carbs={entry.carbs_g} fat={entry.fat_g} /></div>
+              <div style={{ display:"flex", gap:10, marginTop:6 }}>
+                <span style={{ fontSize:12, color:"var(--blue-text)" }}>P {entry.protein_g}g</span>
+                <span style={{ fontSize:12, color:"var(--amber-text)" }}>C {entry.carbs_g}g</span>
+                <span style={{ fontSize:12, color:"var(--pink-text)" }}>F {entry.fat_g}g</span>
+              </div>
+            </>
+          ) : null}
+          <p style={{ marginTop:6, fontSize:12, color:"var(--text2)" }}>{entry.breakdown}</p>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:8 }}>
+            <span style={{ fontSize:11, padding:"2px 8px", borderRadius:99, background:"var(--blue-bg)", color:"var(--blue-text)" }}>{entry.confidence} confidence</span>
+            <button onClick={onDelete} style={{ fontSize:12, padding:"3px 10px", borderColor:"var(--red)", color:"var(--red)" }}>Remove</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── API KEY SCREEN ───────────────────────────────────────────────────────────
+function ApiKeyScreen({ onSave }) {
+  const [key, setKey] = useState("");
+  const [show, setShow] = useState(false);
+  return (
+    <div style={{ minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem 1.5rem", background:"var(--bg)" }}>
+      <i className="ti ti-salad" style={{ fontSize:48, color:"var(--green)", marginBottom:16 }} />
+      <h1 style={{ fontSize:22, fontWeight:600, marginBottom:8, textAlign:"center" }}>Calorie Tracker</h1>
+      <p style={{ fontSize:14, color:"var(--text2)", textAlign:"center", lineHeight:1.6, marginBottom:"2rem", maxWidth:320 }}>
+        To analyse food photos with AI, enter your Anthropic API key. It's stored only on this device and never sent anywhere except Anthropic's servers.
+      </p>
+      <div style={{ width:"100%", maxWidth:340 }}>
+        <label style={{ fontSize:13, color:"var(--text2)", display:"block", marginBottom:6 }}>Anthropic API key</label>
+        <div style={{ position:"relative", marginBottom:12 }}>
+          <input type={show?"text":"password"} placeholder="sk-ant-..." value={key} onChange={e=>setKey(e.target.value)}
+            style={{ paddingRight:44 }} />
+          <button onClick={()=>setShow(!show)} style={{ position:"absolute", right:6, top:"50%", transform:"translateY(-50%)", background:"none", border:"none", padding:4, color:"var(--text3)" }}>
+            <i className={`ti ${show?"ti-eye-off":"ti-eye"}`} style={{ fontSize:16 }} />
+          </button>
+        </div>
+        <button onClick={()=>{ if(key.startsWith("sk-")) onSave(key); }} disabled={!key.startsWith("sk-")} style={{ width:"100%", padding:"11px", background:"var(--green)", color:"#fff", border:"none", borderRadius:"var(--radius-sm)", fontSize:15, fontWeight:500 }}>
+          Get started
+        </button>
+        <p style={{ marginTop:16, fontSize:12, color:"var(--text3)", textAlign:"center", lineHeight:1.6 }}>
+          Don't have a key? Get one free at <a href="https://console.anthropic.com" target="_blank" style={{ color:"var(--blue-text)" }}>console.anthropic.com</a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
+function App() {
+  const [apiKey, setApiKey]     = useState(() => localStorage.getItem(API_KEY_STORAGE) || "");
+  const [view, setView]         = useState("today");
+  const [log, setLog]           = useState({});
+  const [goal, setGoal]         = useState(2000);
+  const [goalInput, setGoalInput] = useState("2000");
+  const [adding, setAdding]     = useState(false);
+  const [imgData, setImgData]   = useState(null);
+  const [description, setDescription] = useState("");
+  const [manualKcal, setManualKcal]   = useState("");
+  const [category, setCategory] = useState("lunch");
+  const [analyzing, setAnalyzing]     = useState(false);
+  const [result, setResult]     = useState(null);
+  const [error, setError]       = useState(null);
+  const [report, setReport]     = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError]     = useState(null);
+  const fileRef = useRef();
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) setLog(JSON.parse(saved));
+      const g = localStorage.getItem(GOAL_KEY);
+      if (g) { setGoal(parseInt(g)); setGoalInput(g); }
+    } catch {}
+  }, []);
+
+  const saveLog = useCallback(nl => {
+    setLog(nl);
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(nl)); } catch {}
+  }, []);
+
+  const saveGoal = v => { setGoal(v); try { localStorage.setItem(GOAL_KEY, String(v)); } catch {} };
+  const saveApiKey = k => { setApiKey(k); try { localStorage.setItem(API_KEY_STORAGE, k); } catch {} };
+
+  const todayEntries = log[todayKey()] || [];
+  const todayKcal    = todayEntries.reduce((s,e)=>s+e.kcal,0);
+  const todayProtein = todayEntries.reduce((s,e)=>s+(e.protein_g||0),0);
+  const todayCarbs   = todayEntries.reduce((s,e)=>s+(e.carbs_g||0),0);
+  const todayFat     = todayEntries.reduce((s,e)=>s+(e.fat_g||0),0);
+  const pct       = Math.min(100, Math.round(todayKcal/goal*100));
+  const remaining = goal - todayKcal;
+  const ringColor = pct>=100?"var(--red)":pct>=75?"var(--amber)":"var(--green)";
+  const circ = 2*Math.PI*52;
+  const dash = ((100-pct)/100)*circ;
+  const sortedDays = Object.keys(log).sort((a,b)=>b.localeCompare(a));
+  const last7 = getLast7Days();
+  const weekMax = Math.max(goal, ...last7.map(d=>(log[d]||[]).reduce((s,e)=>s+e.kcal,0)));
+
+  const handleFile = file => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = e => setImgData(e.target.result.split(",")[1]);
+    r.readAsDataURL(file);
+  };
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true); setError(null); setResult(null);
+    try {
+      const r = await analyzeImage(apiKey, imgData, description, manualKcal?parseInt(manualKcal):null, category);
+      if (manualKcal) r.kcal = parseInt(manualKcal);
+      setResult(r);
+    } catch(e) { setError("Couldn't analyse. Check your API key or try again."); }
+    setAnalyzing(false);
+  };
+
+  const handleAdd = () => {
+    if (!result) return;
+    const entry = { id:Date.now(), name:result.name, kcal:result.kcal, protein_g:result.protein_g||0, carbs_g:result.carbs_g||0, fat_g:result.fat_g||0, confidence:result.confidence, breakdown:result.breakdown, category, time:new Date().toLocaleTimeString("en-US",{hour:"2-digit",minute:"2-digit"}), img:imgData };
+    const key = todayKey();
+    saveLog({ ...log, [key]:[...(log[key]||[]),entry] });
+    setAdding(false); setImgData(null); setDescription(""); setManualKcal(""); setResult(null); setCategory("lunch");
+    setView("today");
+  };
+
+  const handleDelete = (dateKey, id) => {
+    const updated = (log[dateKey]||[]).filter(e=>e.id!==id);
+    const nl = {...log,[dateKey]:updated};
+    if (!updated.length) delete nl[dateKey];
+    saveLog(nl);
+  };
+
+  const handleReport = async () => {
+    setReportLoading(true); setReportError(null); setReport(null);
+    try {
+      const r = await generateWeeklyReport(apiKey, log, goal, last7);
+      if (!r) setReportError("Not enough data this week. Log some meals first!");
+      else setReport(r);
+    } catch(e) { setReportError("Couldn't generate report. Try again."); }
+    setReportLoading(false);
+  };
+
+  if (!apiKey) return <ApiKeyScreen onSave={saveApiKey} />;
+
+  // ADD MEAL SCREEN
+  if (adding) return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)", padding:`calc(var(--safe-top) + 1rem) 1rem 1rem` }}>
+      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:"1.25rem" }}>
+        <button onClick={()=>{setAdding(false);setImgData(null);setResult(null);setError(null);}} style={{ background:"none", border:"none", padding:4, color:"var(--text2)" }}>
+          <i className="ti ti-arrow-left" style={{ fontSize:22 }} />
+        </button>
+        <span style={{ fontSize:17, fontWeight:600 }}>Log a meal</span>
+      </div>
+
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:"1rem" }}>
+        {CATEGORIES.map(c => (
+          <button key={c.id} onClick={()=>setCategory(c.id)} style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 10px", justifyContent:"center", background:category===c.id?CAT_COLORS[c.id].bg:"var(--bg2)", color:category===c.id?CAT_COLORS[c.id].text:"var(--text2)", borderColor:"transparent", fontWeight:category===c.id?600:400 }}>
+            <i className={`ti ${c.icon}`} style={{ fontSize:16 }} />{c.label}
+          </button>
+        ))}
+      </div>
+
+      {!imgData ? (
+        <div onClick={()=>fileRef.current.click()} style={{ border:"1.5px dashed var(--border2)", borderRadius:"var(--radius)", padding:"2.5rem 1rem", textAlign:"center", cursor:"pointer", marginBottom:"1rem" }}>
+          <i className="ti ti-camera" style={{ fontSize:38, color:"var(--text3)", display:"block", marginBottom:8 }} />
+          <p style={{ color:"var(--text2)", fontSize:14 }}>Tap to take a photo or choose from gallery</p>
+          <input ref={fileRef} type="file" accept="image/*" style={{ display:"none" }} onChange={e=>handleFile(e.target.files[0])} />
+        </div>
+      ) : (
+        <div style={{ position:"relative", marginBottom:"1rem" }}>
+          <img src={`data:image/jpeg;base64,${imgData}`} alt="food" style={{ width:"100%", borderRadius:"var(--radius)", maxHeight:220, objectFit:"cover", display:"block" }} />
+          <button onClick={()=>{setImgData(null);setResult(null);}} style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,0.6)", border:"none", borderRadius:"50%", width:30, height:30, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center" }}>
+            <i className="ti ti-x" style={{ fontSize:15 }} />
+          </button>
+        </div>
+      )}
+
+      <div style={{ marginBottom:"0.75rem" }}>
+        <label style={{ fontSize:13, color:"var(--text2)", display:"block", marginBottom:4 }}>Description (optional)</label>
+        <input type="text" placeholder="e.g. large bowl, extra dressing…" value={description} onChange={e=>setDescription(e.target.value)} />
+      </div>
+      <div style={{ marginBottom:"1rem" }}>
+        <label style={{ fontSize:13, color:"var(--text2)", display:"block", marginBottom:4 }}>Known kcal (optional)</label>
+        <input type="number" placeholder="e.g. 130 for protein scoop" value={manualKcal} onChange={e=>setManualKcal(e.target.value)} />
+      </div>
+
+      {!result && <button onClick={handleAnalyze} disabled={!imgData||analyzing} style={{ width:"100%", padding:"12px", background:"var(--green)", color:"#fff", border:"none", fontSize:15, fontWeight:500 }}>{analyzing?"Analysing…":"Analyse with AI"}</button>}
+      {error && <p style={{ color:"var(--red)", fontSize:13, marginTop:8 }}>{error}</p>}
+
+      {result && (
+        <div style={{ marginTop:"1rem", background:"var(--bg2)", borderRadius:"var(--radius)", padding:"1rem 1.25rem", animation:"fadeIn 0.2s ease" }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"baseline", marginBottom:8 }}>
+            <span style={{ fontWeight:600, fontSize:16 }}>{result.name}</span>
+            <span style={{ fontWeight:600, fontSize:22, color:"var(--green)" }}>{result.kcal} kcal</span>
+          </div>
+          <MacroBar protein={result.protein_g} carbs={result.carbs_g} fat={result.fat_g} />
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6, marginTop:8 }}>
+            <MacroChip label="Protein" val={result.protein_g} textColor="var(--blue-text)" bgColor="var(--blue-bg)" />
+            <MacroChip label="Carbs"   val={result.carbs_g}   textColor="var(--amber-text)" bgColor="var(--amber-bg)" />
+            <MacroChip label="Fat"     val={result.fat_g}     textColor="var(--pink-text)"  bgColor="var(--pink-bg)" />
+          </div>
+          <p style={{ marginTop:8, fontSize:12, color:"var(--text2)" }}>{result.breakdown}</p>
+          <div style={{ display:"flex", gap:8, marginTop:"0.75rem" }}>
+            <button onClick={()=>{setResult(null);setImgData(null);}} style={{ flex:1 }}>Re-analyse</button>
+            <button onClick={handleAdd} style={{ flex:2, background:"var(--green)", color:"#fff", border:"none", fontWeight:500 }}>+ Add to log</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  // MAIN TABS
+  const tabBar = (
+    <div style={{ display:"flex", borderBottom:"0.5px solid var(--border)", marginBottom:"1.25rem" }}>
+      {[["today","Today","ti-flame"],["week","Week","ti-chart-bar"],["insights","Insights","ti-bulb"],["history","History","ti-calendar"],["settings","Settings","ti-settings"]].map(([v,label,icon])=>(
+        <button key={v} onClick={()=>setView(v)} style={{ flex:1, background:"none", border:"none", borderBottom:view===v?"2px solid var(--text)":"2px solid transparent", padding:"0.55rem 0", fontSize:11, color:view===v?"var(--text)":"var(--text2)", fontWeight:view===v?600:400, display:"flex", alignItems:"center", justifyContent:"center", gap:3, borderRadius:0 }}>
+          <i className={`ti ${icon}`} style={{ fontSize:15 }} />{label}
+        </button>
+      ))}
+    </div>
+  );
+
+  return (
+    <div style={{ minHeight:"100vh", background:"var(--bg)", padding:`calc(var(--safe-top) + 1rem) 1rem calc(var(--safe-bottom) + 1rem)` }}>
+      {tabBar}
+
+      {/* TODAY */}
+      {view==="today" && <>
+        <div style={{ display:"flex", alignItems:"center", gap:"1.25rem", marginBottom:"1.25rem" }}>
+          <div style={{ position:"relative", flexShrink:0 }}>
+            <svg width="110" height="110" viewBox="0 0 120 120">
+              <circle cx="60" cy="60" r="52" fill="none" stroke="var(--border)" strokeWidth="9" />
+              <circle cx="60" cy="60" r="52" fill="none" stroke={ringColor} strokeWidth="9" strokeDasharray={circ} strokeDashoffset={dash} strokeLinecap="round" transform="rotate(-90 60 60)" style={{ transition:"stroke-dashoffset 0.5s ease" }} />
+            </svg>
+            <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+              <span style={{ fontSize:20, fontWeight:600 }}>{pct}%</span>
+              <span style={{ fontSize:10, color:"var(--text2)" }}>of goal</span>
+            </div>
+          </div>
+          <div style={{ flex:1, display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}>
+            {[["Consumed",`${todayKcal}`,"kcal"],[remaining>=0?"Remaining":"Over by",`${Math.abs(remaining)}`,"kcal"],["Goal",`${goal}`,"kcal"],["Meals",`${todayEntries.length}`,"logged"]].map(([l,v,u])=>(
+              <div key={l} style={{ background:"var(--bg2)", borderRadius:"var(--radius-sm)", padding:"0.5rem 0.65rem" }}>
+                <p style={{ fontSize:10, color:"var(--text2)" }}>{l}</p>
+                <p style={{ fontSize:17, fontWeight:600 }}>{v}</p>
+                <p style={{ fontSize:10, color:"var(--text3)" }}>{u}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {todayEntries.length>0 && (
+          <div style={{ marginBottom:"1.25rem" }}>
+            <MacroBar protein={todayProtein} carbs={todayCarbs} fat={todayFat} />
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6, marginTop:8 }}>
+              <MacroChip label="Protein" val={todayProtein} textColor="var(--blue-text)" bgColor="var(--blue-bg)" />
+              <MacroChip label="Carbs"   val={todayCarbs}   textColor="var(--amber-text)" bgColor="var(--amber-bg)" />
+              <MacroChip label="Fat"     val={todayFat}     textColor="var(--pink-text)"  bgColor="var(--pink-bg)" />
+            </div>
+          </div>
+        )}
+
+        {todayEntries.length===0 ? (
+          <div style={{ textAlign:"center", padding:"2rem 0", color:"var(--text3)" }}>
+            <i className="ti ti-salad" style={{ fontSize:36, display:"block", marginBottom:8 }} />
+            <p style={{ fontSize:14 }}>No meals logged yet</p>
+          </div>
+        ) : CATEGORIES.map(cat=>{
+          const items = todayEntries.filter(e=>e.category===cat.id);
+          if (!items.length) return null;
+          return (
+            <div key={cat.id} style={{ marginBottom:"1rem" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
+                <span style={{ fontSize:11, fontWeight:600, padding:"2px 8px", borderRadius:99, background:CAT_COLORS[cat.id].bg, color:CAT_COLORS[cat.id].text }}>
+                  <i className={`ti ${cat.icon}`} style={{ marginRight:3, fontSize:12, verticalAlign:-1 }} />{cat.label}
+                </span>
+                <span style={{ fontSize:11, color:"var(--text3)" }}>{items.reduce((s,e)=>s+e.kcal,0)} kcal</span>
+              </div>
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {items.map(e=><EntryRow key={e.id} entry={e} onDelete={()=>handleDelete(todayKey(),e.id)} />)}
+              </div>
+            </div>
+          );
+        })}
+
+        <button onClick={()=>setAdding(true)} style={{ width:"100%", padding:"12px", marginTop:4, background:"var(--green)", color:"#fff", border:"none", fontSize:15, fontWeight:500, display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}>
+          <i className="ti ti-camera" style={{ fontSize:18 }} />Log a meal
+        </button>
+      </>}
+
+      {/* WEEK */}
+      {view==="week" && <>
+        <p style={{ fontSize:13, color:"var(--text2)", marginBottom:"1rem" }}>Last 7 days vs goal ({goal} kcal)</p>
+        <div style={{ display:"flex", alignItems:"flex-end", gap:6, height:160, marginBottom:"0.75rem" }}>
+          {last7.map(day=>{
+            const entries=log[day]||[];
+            const total=entries.reduce((s,e)=>s+e.kcal,0);
+            const barH=weekMax>0?Math.round(total/weekMax*130):0;
+            const goalH=weekMax>0?Math.round(goal/weekMax*130):0;
+            const isToday=day===todayKey();
+            const label=new Date(day+"T00:00:00").toLocaleDateString("en-US",{weekday:"short"}).slice(0,1);
+            return (
+              <div key={day} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
+                <span style={{ fontSize:9, color:"var(--text3)", minHeight:14, textAlign:"center" }}>{total>0?total:""}</span>
+                <div style={{ width:"100%", height:130, position:"relative", display:"flex", alignItems:"flex-end" }}>
+                  <div style={{ position:"absolute", bottom:goalH, left:0, right:0, height:1.5, background:"var(--border2)", zIndex:2 }} />
+                  <div style={{ width:"100%", height:Math.max(barH,2), borderRadius:"4px 4px 0 0", background:total>goal?"var(--red)":isToday?"var(--green)":"var(--text3)", transition:"height 0.4s ease", zIndex:1 }} />
+                </div>
+                <span style={{ fontSize:11, fontWeight:isToday?600:400, color:isToday?"var(--text)":"var(--text2)" }}>{label}</span>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:"1.5rem" }}>
+          {[["var(--green)","Today"],["var(--text3)","Under goal"],["var(--red)","Over goal"]].map(([c,l])=>(
+            <div key={l} style={{ display:"flex", alignItems:"center", gap:4 }}>
+              <div style={{ width:10, height:10, borderRadius:2, background:c }} />
+              <span style={{ fontSize:11, color:"var(--text2)" }}>{l}</span>
+            </div>
+          ))}
+        </div>
+        {(()=>{
+          const all=last7.flatMap(d=>log[d]||[]);
+          const wK=all.reduce((s,e)=>s+e.kcal,0);
+          const wP=all.reduce((s,e)=>s+(e.protein_g||0),0);
+          const wC=all.reduce((s,e)=>s+(e.carbs_g||0),0);
+          const wF=all.reduce((s,e)=>s+(e.fat_g||0),0);
+          const dl=last7.filter(d=>(log[d]||[]).length>0).length||1;
+          if(!wK) return <p style={{ textAlign:"center", fontSize:13, color:"var(--text3)" }}>No data yet — log some meals!</p>;
+          return <>
+            <p style={{ fontSize:13, color:"var(--text2)", marginBottom:"0.75rem" }}>Weekly summary ({dl} day{dl!==1?"s":""} logged)</p>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:8, marginBottom:"1rem" }}>
+              {[["Total kcal",wK,"kcal"],["Daily avg",Math.round(wK/dl),"kcal/day"],["Avg protein",Math.round(wP/dl),"g/day"],["Avg carbs",Math.round(wC/dl),"g/day"]].map(([l,v,u])=>(
+                <div key={l} style={{ background:"var(--bg2)", borderRadius:"var(--radius-sm)", padding:"0.65rem 0.75rem" }}>
+                  <p style={{ fontSize:11, color:"var(--text2)" }}>{l}</p>
+                  <p style={{ fontSize:18, fontWeight:600 }}>{v}</p>
+                  <p style={{ fontSize:11, color:"var(--text3)" }}>{u}</p>
+                </div>
+              ))}
+            </div>
+            <MacroBar protein={wP} carbs={wC} fat={wF} />
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(3,1fr)", gap:6, marginTop:8 }}>
+              <MacroChip label="Protein" val={wP} textColor="var(--blue-text)" bgColor="var(--blue-bg)" />
+              <MacroChip label="Carbs"   val={wC} textColor="var(--amber-text)" bgColor="var(--amber-bg)" />
+              <MacroChip label="Fat"     val={wF} textColor="var(--pink-text)"  bgColor="var(--pink-bg)" />
+            </div>
+          </>;
+        })()}
+      </>}
+
+      {/* INSIGHTS */}
+      {view==="insights" && <>
+        {!report && !reportLoading && (
+          <div style={{ textAlign:"center", padding:"1.5rem 0 1rem" }}>
+            <i className="ti ti-bulb" style={{ fontSize:40, color:"var(--text3)", display:"block", marginBottom:12 }} />
+            <p style={{ fontSize:16, fontWeight:600, marginBottom:8 }}>Weekly health report</p>
+            <p style={{ fontSize:14, color:"var(--text2)", lineHeight:1.65, marginBottom:"1.5rem", maxWidth:300, margin:"0 auto 1.5rem" }}>
+              AI analyses your last 7 days — healthiest days, eating patterns, and personalised tips to eat cleaner.
+            </p>
+            <button onClick={handleReport} style={{ padding:"11px 24px", background:"var(--green)", color:"#fff", border:"none", fontWeight:500, fontSize:15 }}>
+              <i className="ti ti-sparkles" style={{ marginRight:6, fontSize:15, verticalAlign:-2 }} />Generate my report
+            </button>
+            {reportError && <p style={{ marginTop:10, fontSize:13, color:"var(--red)" }}>{reportError}</p>}
+          </div>
+        )}
+        {reportLoading && (
+          <div style={{ textAlign:"center", padding:"3rem 0" }}>
+            <div style={{ display:"inline-block", width:28, height:28, border:"2.5px solid var(--border2)", borderTopColor:"var(--text)", borderRadius:"50%", animation:"spin 0.8s linear infinite", marginBottom:12 }} />
+            <p style={{ fontSize:14, color:"var(--text2)" }}>Analysing your week…</p>
+          </div>
+        )}
+        {report && (
+          <div style={{ animation:"fadeIn 0.2s ease" }}>
+            <div style={{ background:"var(--bg2)", borderRadius:"var(--radius)", padding:"1rem 1.25rem", marginBottom:"1rem" }}>
+              <p style={{ fontSize:14, lineHeight:1.7 }}>{report.summary}</p>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:"1rem" }}>
+              <div style={{ background:"var(--green-bg)", borderRadius:"var(--radius)", padding:"0.85rem 1rem" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:5 }}>
+                  <i className="ti ti-award" style={{ fontSize:15, color:"var(--green-text)" }} />
+                  <span style={{ fontSize:11, fontWeight:600, color:"var(--green-text)" }}>Healthiest day</span>
+                </div>
+                <p style={{ fontSize:13, fontWeight:600, color:"var(--green-text)", marginBottom:4 }}>{friendlyDate(report.healthiest_day.date)}</p>
+                <p style={{ fontSize:12, color:"var(--green-text)", lineHeight:1.55 }}>{report.healthiest_day.reason}</p>
+              </div>
+              <div style={{ background:"var(--red-bg)", borderRadius:"var(--radius)", padding:"0.85rem 1rem" }}>
+                <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:5 }}>
+                  <i className="ti ti-trending-up" style={{ fontSize:15, color:"var(--red-text)" }} />
+                  <span style={{ fontSize:11, fontWeight:600, color:"var(--red-text)" }}>Room to improve</span>
+                </div>
+                <p style={{ fontSize:13, fontWeight:600, color:"var(--red-text)", marginBottom:4 }}>{friendlyDate(report.unhealthiest_day.date)}</p>
+                <p style={{ fontSize:12, color:"var(--red-text)", lineHeight:1.55 }}>{report.unhealthiest_day.reason}</p>
+              </div>
+            </div>
+            {report.pattern && (
+              <div style={{ border:"0.5px solid var(--border)", borderRadius:"var(--radius)", padding:"0.85rem 1rem", marginBottom:"1rem", display:"flex", gap:10 }}>
+                <i className="ti ti-eye" style={{ fontSize:17, color:"var(--text2)", flexShrink:0, marginTop:1 }} />
+                <p style={{ fontSize:13, lineHeight:1.65, color:"var(--text2)" }}>{report.pattern}</p>
+              </div>
+            )}
+            {report.strengths?.length>0 && (
+              <div style={{ marginBottom:"1rem" }}>
+                <p style={{ fontSize:11, fontWeight:600, color:"var(--text2)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>What you did well</p>
+                {report.strengths.map((s,i)=>(
+                  <div key={i} style={{ display:"flex", gap:8, marginBottom:7 }}>
+                    <i className="ti ti-check" style={{ fontSize:15, color:"var(--green)", flexShrink:0, marginTop:2 }} />
+                    <p style={{ fontSize:13, lineHeight:1.6 }}>{s}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {report.eat_cleaner_tips?.length>0 && (
+              <div style={{ marginBottom:"1rem" }}>
+                <p style={{ fontSize:11, fontWeight:600, color:"var(--text2)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>Eat cleaner this week</p>
+                {report.eat_cleaner_tips.map((t,i)=>(
+                  <div key={i} style={{ background:"var(--bg)", border:"0.5px solid var(--border)", borderRadius:"var(--radius)", padding:"0.85rem 1rem", marginBottom:8 }}>
+                    <p style={{ fontSize:13, fontWeight:500, lineHeight:1.5, marginBottom:4 }}>{t.tip}</p>
+                    <p style={{ fontSize:12, color:"var(--text2)", lineHeight:1.5 }}>{t.context}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={()=>{setReport(null);setReportError(null);}} style={{ width:"100%", fontSize:13 }}>
+              <i className="ti ti-refresh" style={{ marginRight:5, fontSize:13, verticalAlign:-1 }} />Regenerate report
+            </button>
+          </div>
+        )}
+      </>}
+
+      {/* HISTORY */}
+      {view==="history" && <>
+        {sortedDays.length===0 ? (
+          <div style={{ textAlign:"center", padding:"2rem 0", color:"var(--text3)" }}>
+            <i className="ti ti-history" style={{ fontSize:36, display:"block", marginBottom:8 }} />
+            <p style={{ fontSize:14 }}>No history yet</p>
+          </div>
+        ) : sortedDays.map(day=>{
+          const entries=log[day]||[];
+          const total=entries.reduce((s,e)=>s+e.kcal,0);
+          const dp=Math.min(100,Math.round(total/goal*100));
+          const dc=dp>=100?"var(--red)":dp>=75?"var(--amber)":"var(--green)";
+          const prot=entries.reduce((s,e)=>s+(e.protein_g||0),0);
+          const carb=entries.reduce((s,e)=>s+(e.carbs_g||0),0);
+          const fat=entries.reduce((s,e)=>s+(e.fat_g||0),0);
+          return (
+            <div key={day} style={{ marginBottom:"1.25rem" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                <span style={{ fontSize:13, fontWeight:600 }}>{friendlyDate(day)}</span>
+                <span style={{ fontSize:13, color:"var(--text2)" }}>{total} / {goal} kcal</span>
+              </div>
+              <div style={{ height:4, background:"var(--border)", borderRadius:99, marginBottom:6, overflow:"hidden" }}>
+                <div style={{ height:"100%", width:`${dp}%`, background:dc, borderRadius:99 }} />
+              </div>
+              {(prot+carb+fat)>0 && (
+                <div style={{ display:"flex", gap:10, marginBottom:8 }}>
+                  <span style={{ fontSize:11, color:"var(--blue-text)" }}>P {prot}g</span>
+                  <span style={{ fontSize:11, color:"var(--amber-text)" }}>C {carb}g</span>
+                  <span style={{ fontSize:11, color:"var(--pink-text)" }}>F {fat}g</span>
+                </div>
+              )}
+              <div style={{ display:"flex", flexDirection:"column", gap:5 }}>
+                {entries.map(e=><EntryRow key={e.id} entry={e} onDelete={()=>handleDelete(day,e.id)} compact />)}
+              </div>
+            </div>
+          );
+        })}
+      </>}
+
+      {/* SETTINGS */}
+      {view==="settings" && (
+        <div>
+          <div style={{ background:"var(--bg2)", borderRadius:"var(--radius)", padding:"1rem 1.25rem", marginBottom:"1rem" }}>
+            <p style={{ fontSize:13, color:"var(--text2)", marginBottom:6 }}>Daily calorie goal</p>
+            <div style={{ display:"flex", gap:8 }}>
+              <input type="number" value={goalInput} onChange={e=>setGoalInput(e.target.value)} style={{ flex:1 }} min={500} max={9999} />
+              <button onClick={()=>{ const v=parseInt(goalInput); if(v>0) saveGoal(v); }} style={{ whiteSpace:"nowrap" }}>Save</button>
+            </div>
+            <div style={{ display:"flex", gap:6, marginTop:10, flexWrap:"wrap" }}>
+              {[1500,1800,2000,2200,2500].map(g=>(
+                <button key={g} onClick={()=>{setGoalInput(String(g));saveGoal(g);}} style={{ fontSize:12, padding:"3px 10px", background:goal===g?"var(--blue-bg)":undefined, color:goal===g?"var(--blue-text)":undefined, borderColor:goal===g?"transparent":undefined }}>{g}</button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ background:"var(--bg2)", borderRadius:"var(--radius)", padding:"1rem 1.25rem", marginBottom:"1rem" }}>
+            <p style={{ fontSize:13, color:"var(--text2)", marginBottom:6 }}>Anthropic API key</p>
+            <p style={{ fontSize:12, color:"var(--text3)", marginBottom:10, lineHeight:1.5 }}>Update your API key if it has changed. It's stored only on this device.</p>
+            <input type="password" value={apiKey} onChange={e=>saveApiKey(e.target.value)} placeholder="sk-ant-..." />
+          </div>
+
+          <div style={{ background:"var(--bg2)", borderRadius:"var(--radius)", padding:"1rem 1.25rem" }}>
+            <p style={{ fontSize:13, color:"var(--text2)", marginBottom:8 }}>Danger zone</p>
+            <button onClick={()=>{ if(window.confirm("Clear all logged data?")) saveLog({}); }} style={{ borderColor:"var(--red)", color:"var(--red)", fontSize:13 }}>
+              <i className="ti ti-trash" style={{ marginRight:4, fontSize:14, verticalAlign:-2 }} />Clear all history
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
